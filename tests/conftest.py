@@ -8,6 +8,7 @@ from subprocess import check_call
 from mpi4py import MPI
 from pyadjoint.tape import get_working_tape
 
+
 @pytest.fixture(autouse=True)
 def disable_gc_on_parallel(request):
     """ Disables garbage collection on parallel tests,
@@ -18,11 +19,13 @@ def disable_gc_on_parallel(request):
         assert not gc.isenabled()
         request.addfinalizer(restart_gc)
 
+
 def restart_gc():
     """ Finaliser for restarting garbage collection
     """
     gc.enable()
     assert gc.isenabled()
+
 
 def parallel(item):
     """Run a test in parallel.
