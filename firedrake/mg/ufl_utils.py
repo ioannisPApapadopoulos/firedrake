@@ -111,7 +111,23 @@ def coarsen_bc(bc, self, coefficient_mapping=None):
     subdomain = bc.sub_domain
     method = bc.method
 
-    bc = type(bc)(V, val, subdomain, method=method)
+    if type(bc) == firedrake.matrix_free.operators.ActiveConstraintBC:
+        from numpy import where
+        # FIXME: this is incorrect, but put here for now to see what's happening,
+        # I need to think about how to restrict the active indices
+        # restrictedrows = [int(x/4) for x in bc.nodes if not x%4]
+        ff = firedrake.Function(bc.function_space())
+        fc = firedrake.Function(V)
+        # from IPython import embed; embed()
+        ff.vector()[bc.nodes] = 1
+        dm = ff.function_space().dm
+        _, _, inject = firedrake.dmhooks.get_transfer_operators(dm)
+        inject(ff,fc)
+        restrictedrows = where(fc.vector().array() > 0.5)
+        bc = type(bc)(V, val, rows=restrictedrows, subdomain=subdomain, method=method)
+
+    else:
+        bc = type(bc)(V, val, subdomain, method=method)
 
     if zeroed:
         bc.homogenize()
@@ -214,6 +230,7 @@ def coarsen_nlvp(problem, self, coefficient_mapping=None):
     u = coefficient_mapping[problem.u]
 
     bcs = [self(bc, self) for bc in problem.bcs]
+    bcs = filter(None, bcs)
     J = self(problem.J, self, coefficient_mapping=coefficient_mapping)
     Jp = self(problem.Jp, self, coefficient_mapping=coefficient_mapping)
     F = self(problem.F, self, coefficient_mapping=coefficient_mapping)
