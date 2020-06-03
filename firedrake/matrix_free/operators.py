@@ -90,11 +90,37 @@ def find_element_of_which_sub_block(rows,ises):
 
 class ActiveConstraintBC(DirichletBC):
   id_ = count()
-  def __init__(self, V, val, rows = None, subdomain = "on_boundary", method="topological"):
+  def __init__(self, V, val, rows = None, sub_domain = "on_boundary", method="topological"):
       super().__init__(V, val, [], method)
       if rows is not None:
           self.nodes = array(rows)
       self._cache_key = self._cache_key + (type(self), next(self.id_))
+
+  def reconstruct(self, field=None, V=None, g=None, sub_domain=None, method=None, use_split=False):
+      fs = self.function_space()
+      if V is None:
+          V = fs
+      if g is None:
+         g = self._original_arg
+      if sub_domain is None:
+         sub_domain = self.sub_domain
+      if method is None:
+         method = self.method
+      if field is not None:
+         assert V is not None, "`V` can not be `None` when `field` is not `None`"
+         V = self.as_subspace(field, V, use_split)
+         if V is None:
+             return
+      if V == fs and \
+         V.parent == fs.parent and \
+         V.index == fs.index and \
+         (V.parent is None or V.parent.parent == fs.parent.parent) and \
+         (V.parent is None or V.parent.index == fs.parent.index) and \
+         g == self._original_arg and \
+         sub_domain == self.sub_domain and method == self.method:
+             return self
+      return type(self)(V, g, rows = self.nodes, sub_domain = "on_boundary", method=method)
+
 
 class ImplicitMatrixContext(object):
     # By default, these matrices will represent diagonal blocks (the
@@ -168,6 +194,7 @@ class ImplicitMatrixContext(object):
 
         # For assembling action(f, self._x)
         self.bcs_action = []
+        #import pdb; pdb.set_trace()
         for bc in self.bcs:
             if isinstance(bc, DirichletBC):
                 self.bcs_action.append(bc)
@@ -373,7 +400,7 @@ class ImplicitMatrixContext(object):
 
         row_bcs = []
         col_bcs = []
-
+        
         for bc in self.bcs:
             if isinstance(bc, DirichletBC):
                 bc_temp = bc.reconstruct(field=row_inds, V=Wrow, g=bc.function_arg, sub_domain=bc.sub_domain, method=bc.method, use_split=True)
@@ -437,6 +464,8 @@ class ImplicitMatrixContext(object):
 
         # These are the sets of ISes of which the the row and column
         # space consist.
+
+        print("inside MatZeroRowsColumns")
         ises = self._y.function_space().dof_dset.field_ises
 
         # Find the blocks which the rows are a part of and find the row shift
