@@ -10,9 +10,6 @@ from firedrake.petsc import PETSc
 from firedrake.utils import cached_property
 
 from firedrake.constant import Constant
-from itertools import count
-
-from numpy import array
 
 __all__ = ("ImplicitMatrixContext", )
 
@@ -97,7 +94,7 @@ class ActiveConstraintBC(DirichletBC):
   def __init__(self, V, val, rows = None, sub_domain = "on_boundary", method="topological"):
       super().__init__(V, val, [], method)
       if rows is not None:
-          self.nodes = array(rows)
+          self.nodes = numpy.array(rows)
 
   def reconstruct(self, field=None, V=None, g=None, sub_domain=None, method=None, use_split=False):
       fs = self.function_space()
