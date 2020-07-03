@@ -9,6 +9,10 @@ from firedrake.bcs import DirichletBC, EquationBCSplit
 from firedrake.petsc import PETSc
 from firedrake.utils import cached_property
 
+from firedrake.constant import Constant
+from itertools import count
+
+from numpy import array
 
 __all__ = ("ImplicitMatrixContext", )
 
@@ -55,6 +59,70 @@ def find_sub_block(iset, ises):
         # We didn't manage to hoover up all the target indices, not a match
         raise LookupError("Unable to find %s in %s" % (iset, ises))
     return found
+
+def find_element_of_which_sub_block(rows,ises):
+    # This function acts as lookup to find which block the indices belong in
+    block = {}
+    shift = []
+    found = 0
+    candidates = OrderedDict(enumerate(ises))
+    for i, candidate in list(candidates.items()):
+        # Initialise dictionary to hold the rows and the shift parameter
+        # since DirichletBC starts from zero for each block
+        block[i] = []
+        shift.append(candidate.indices[0])
+    for row in rows:
+        for i, candidate in list(candidates.items()):
+            candidate_indices = candidate.indices
+            lmatch = numpy.isin(row, candidate_indices)
+            # We found the block in which the index lives, so we store it
+            #if comm.allreduce(lmatch, op=MPI.LAND):
+            if lmatch:
+                block[i].append(row)
+                found += 1
+                break
+    if found < len(rows):
+        # We did not manage to find the row in the possible index sets
+        raise LookupError("Unable to find %s in %s" % (rows, ises))
+    return (block, shift)
+
+
+
+
+class ActiveConstraintBC(DirichletBC):
+  """
+   This overloads the DirichletBC class in order to impose homogeneous Dirichlet boundary
+   conditions on user-defined vertices
+  """
+  def __init__(self, V, val, rows = None, sub_domain = "on_boundary", method="topological"):
+      super().__init__(V, val, [], method)
+      if rows is not None:
+          self.nodes = array(rows)
+
+  def reconstruct(self, field=None, V=None, g=None, sub_domain=None, method=None, use_split=False):
+      fs = self.function_space()
+      if V is None:
+          V = fs
+      if g is None:
+         g = self._original_arg
+      if sub_domain is None:
+         sub_domain = self.sub_domain
+      if method is None:
+         method = self.method
+      if field is not None:
+         assert V is not None, "`V` can not be `None` when `field` is not `None`"
+         V = self.as_subspace(field, V, use_split)
+         if V is None:
+             return
+      if V == fs and \
+         V.parent == fs.parent and \
+         V.index == fs.index and \
+         (V.parent is None or V.parent.parent == fs.parent.parent) and \
+         (V.parent is None or V.parent.index == fs.parent.index) and \
+         g == self._original_arg and \
+         sub_domain == self.sub_domain and method == self.method:
+             return self
+      return type(self)(V, g, rows = self.nodes, sub_domain = "on_boundary", method=method)
 
 
 class ImplicitMatrixContext(object):
@@ -129,6 +197,7 @@ class ImplicitMatrixContext(object):
 
         # For assembling action(f, self._x)
         self.bcs_action = []
+        #import pdb; pdb.set_trace()
         for bc in self.bcs:
             if isinstance(bc, DirichletBC):
                 self.bcs_action.append(bc)
@@ -371,3 +440,80 @@ class ImplicitMatrixContext(object):
         submat.setUp()
 
         return submat
+
+    def duplicate(self, mat, newmat):
+        newmat_ctx = ImplicitMatrixContext(self.a,
+                                           row_bcs=self.bcs,
+                                           col_bcs=self.bcs_col,
+                                           fc_params=self.fc_params,
+                                           appctx=self.appctx)
+        newmat = PETSc.Mat().create(comm=mat.comm)
+        newmat.setType("python")
+        newmat.setSizes((newmat_ctx.row_sizes, newmat_ctx.col_sizes),
+                        bsize=newmat_ctx.block_size)
+        newmat.setPythonContext(newmat_ctx)
+        newmat.setUp()
+        return newmat
+
+    def zeroRowsColumns(self, mat, active_rows, diag=1, x=None, b=None):
+        """
+        The way we zero rows and columns of unassembled matrices is by
+        constructing a DirichetBC corresponding to the rows and columns
+        which by nature of how bcs are implemented, is equivalent to zeroing
+        the rows and columns and adding a 1 to the diagonal
+
+        These are the sets of ISes of which the the row and column
+        space consist.
+        """
+
+        if active_rows is None:
+            raise("zeroRowsColumns was called but active_rows is None, is this a parallel issue?")
+        ises = self._y.function_space().dof_dset.field_ises
+
+        # Find the blocks which the rows are a part of and find the row shift
+        # since DirichletBC starts from 0 for each block
+        (block, shift) = find_element_of_which_sub_block(active_rows, ises)
+
+        # Include current DirichletBC conditions
+        bcs = []
+        bcs_col = []
+        Vrow = self._y.function_space()
+        Vcol = self._x.function_space()
+        [bcs.append(bc) for bc in self.bcs]
+        [bcs_col.append(bc) for bc in self.bcs_col]
+
+        # If rows and columns bcs are equal, then no need to redo columns bcs
+        bcs_row_and_column_equal = self.bcs == self.bcs_col
+
+        for i in range(len(block)):
+            # For each block create a new DirichletBC corresponding the the
+            # active rows
+            if block[i]:
+                rows = block[i]
+                rows = rows - shift[i]
+                activebcs_row = ActiveConstraintBC(Vrow.sub(i), Constant(0), rows = rows)
+                bcs.append(activebcs_row)
+                if bcs_row_and_column_equal:
+                   bcs_col.append(activebcs_row)
+                else:
+                    activebcs_col = ActiveConstraintBC(Vcol.sub(i), Constant(0), rows = rows)
+                    bcs_col.append(activebcs_col)
+
+        # Update bcs list
+        self.bcs = tuple(bcs)
+        self.bcs_col = tuple(bcs_col)
+        # Set new context, so PETSc mat is aware of new bcs
+        newmat_ctx = ImplicitMatrixContext(self.a,
+                                           row_bcs=self.bcs,
+                                           col_bcs=self.bcs_col,
+                                           fc_params=self.fc_params,
+                                           appctx=self.appctx)
+
+        mat.setPythonContext(newmat_ctx)
+
+        # Needed for MG purposes! This lets the DM SNES context aware of the new Dirichlet BCS
+        # which is where the bcs are extracted from when coarsening. 
+        self._x.function_space().dm.appctx[0]._problem.bcs = tuple(bcs)
+        # zero active-set rows in residual, is this necessary or is this already taken
+        # care of by DirichetBC?
+        b.array[rows] = 0
