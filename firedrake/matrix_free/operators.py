@@ -197,7 +197,6 @@ class ImplicitMatrixContext(object):
 
         # For assembling action(f, self._x)
         self.bcs_action = []
-        #import pdb; pdb.set_trace()
         for bc in self.bcs:
             if isinstance(bc, DirichletBC):
                 self.bcs_action.append(bc)
