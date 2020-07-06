@@ -451,7 +451,7 @@ class ImplicitMatrixContext(object):
         newmat.setUp()
         return newmat
 
-    def zeroRowsColumns(self, mat, active_rows, diag=1, x=None, b=None):
+    def zeroRowsColumns(self, mat, active_rows, diag=1.0, x=None, b=None):
         """
         The way we zero rows and columns of unassembled matrices is by
         constructing a DirichetBC corresponding to the rows and columns
@@ -461,9 +461,10 @@ class ImplicitMatrixContext(object):
         These are the sets of ISes of which the the row and column
         space consist.
         """
-
-        if active_rows is None:
-            raise("zeroRowsColumns was called but active_rows is None, is this a parallel issue?")
+        if not numpy.allclose(diag, 1.0):
+            raise NotImplementedError("We do not know how to implement matrix-free ZeroRowsColumns with diag not equal to 1")
+        assert active_rows is not None
+        
         ises = self._y.function_space().dof_dset.field_ises
 
         # Find the blocks which the rows are a part of and find the row shift
@@ -480,19 +481,31 @@ class ImplicitMatrixContext(object):
 
         # If rows and columns bcs are equal, then no need to redo columns bcs
         bcs_row_and_column_equal = self.bcs == self.bcs_col
+        
+        if x:
+             from firedrake import function
+             bcs_u = function.Function(Vrow)
+             bcs_u.vector().set_local(x)
 
         for i in range(len(block)):
             # For each block create a new DirichletBC corresponding the the
             # active rows
             if block[i]:
-                rows = block[i]
+                rows = block[i] 
                 rows = rows - shift[i]
-                activebcs_row = ActiveConstraintBC(Vrow.sub(i), Constant(0), rows = rows)
+                if x:
+                    bcs_u_sub = bcs_u.split()[i]
+                else:
+                    # FIXME: we should read the shape of the function space and
+                    # construct the correctly sized Constant
+                    bcs_u_sub = Constant(0)
+                                     
+                activebcs_row = ActiveConstraintBC(Vrow.sub(i), bcs_u_sub, rows = rows)
                 bcs.append(activebcs_row)
                 if bcs_row_and_column_equal:
                    bcs_col.append(activebcs_row)
                 else:
-                    activebcs_col = ActiveConstraintBC(Vcol.sub(i), Constant(0), rows = rows)
+                    activebcs_col = ActiveConstraintBC(Vcol.sub(i), bcs_u_sub, rows = rows)
                     bcs_col.append(activebcs_col)
 
         # Update bcs list
@@ -506,10 +519,10 @@ class ImplicitMatrixContext(object):
                                            appctx=self.appctx)
 
         mat.setPythonContext(newmat_ctx)
-
         # Needed for MG purposes! This lets the DM SNES context aware of the new Dirichlet BCS
-        # which is where the bcs are extracted from when coarsening. 
-        self._x.function_space().dm.appctx[0]._problem.bcs = tuple(bcs)
-        # zero active-set rows in residual, is this necessary or is this already taken
-        # care of by DirichetBC?
-        b.array[rows] = 0
+        # which is where the bcs are extracted from when coarsening.
+        if self._x.function_space().dm.appctx:
+            self._x.function_space().dm.appctx[0]._problem.bcs = tuple(bcs)
+        # adjust active-set rows in residual
+        if x and b:
+            b.array[rows] = x.array_r[rows]
