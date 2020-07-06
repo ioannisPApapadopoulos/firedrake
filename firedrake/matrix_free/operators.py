@@ -436,7 +436,7 @@ class ImplicitMatrixContext(object):
         submat.setUp()
 
         return submat
-
+    
     def duplicate(self, mat, newmat):
         newmat_ctx = ImplicitMatrixContext(self.a,
                                            row_bcs=self.bcs,
