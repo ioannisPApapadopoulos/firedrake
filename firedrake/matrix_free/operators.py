@@ -86,7 +86,7 @@ def find_element_of_which_sub_block(rows,ises):
 
 
 
-class ActiveConstraintBC(DirichletBC):
+class ZeroRowsColumnsBC(DirichletBC):
   """
    This overloads the DirichletBC class in order to impose homogeneous Dirichlet boundary
    conditions on user-defined vertices
@@ -170,7 +170,9 @@ class ImplicitMatrixContext(object):
         from firedrake import function
         self._y = function.Function(test_space)
         self._x = function.Function(trial_space)
-
+        
+        # Temporary storage for holding the BC values during zeroRowsColumns
+        self._tmp_zeroRowsColumns = function.Function(test_space)
         # These are temporary storage for holding the BC
         # values during matvec application.  _xbc is for
         # the action and ._ybc is for transpose.
@@ -438,6 +440,7 @@ class ImplicitMatrixContext(object):
         return submat
     
     def duplicate(self, mat, newmat):
+        import ipdb; ipdb.set_trace()
         newmat_ctx = ImplicitMatrixContext(self.a,
                                            row_bcs=self.bcs,
                                            col_bcs=self.bcs_col,
@@ -461,9 +464,15 @@ class ImplicitMatrixContext(object):
         These are the sets of ISes of which the the row and column
         space consist.
         """
+        print("inside zerorowscolumns")
+        print(b) 
+        print(x)
+        if active_rows is None:
+            raise NotImplementedError("Matrix-free zeroRowsColumns called but no rows provided")
         if not numpy.allclose(diag, 1.0):
             raise NotImplementedError("We do not know how to implement matrix-free ZeroRowsColumns with diag not equal to 1")
-        assert active_rows is not None
+        if b is None:
+            print("WARNING: No right-hand side vector provided to matrix-free zeroRowsColumns, ksp.solve() may cause unexpected behaviour")
         
         ises = self._y.function_space().dof_dset.field_ises
 
@@ -482,30 +491,27 @@ class ImplicitMatrixContext(object):
         # If rows and columns bcs are equal, then no need to redo columns bcs
         bcs_row_and_column_equal = self.bcs == self.bcs_col
         
+        # If optional vector of solutions for zeroed rows given then need to pass 
+        # to DirichletBC otherwise it will be zero
         if x:
-             from firedrake import function
-             bcs_u = function.Function(Vrow)
-             bcs_u.vector().set_local(x)
+            self._tmp_zeroRowsColumns.vector().set_local(x)
+        else:
+            self._tmp_zeroRowsColumns.vector().set_local(0)
 
         for i in range(len(block)):
-            # For each block create a new DirichletBC corresponding the the
-            # active rows
+            # For each block create a new DirichletBC corresponding to the
+            # rows and columns to be zeroed
             if block[i]:
                 rows = block[i] 
                 rows = rows - shift[i]
-                if x:
-                    bcs_u_sub = bcs_u.split()[i]
-                else:
-                    # FIXME: we should read the shape of the function space and
-                    # construct the correctly sized Constant
-                    bcs_u_sub = Constant(0)
+                tmp_sub = self._tmp_zeroRowsColumns.split()[i]
                                      
-                activebcs_row = ActiveConstraintBC(Vrow.sub(i), bcs_u_sub, rows = rows)
+                activebcs_row = ZeroRowsColumnsBC(Vrow.sub(i), tmp_sub, rows = rows)
                 bcs.append(activebcs_row)
                 if bcs_row_and_column_equal:
                    bcs_col.append(activebcs_row)
                 else:
-                    activebcs_col = ActiveConstraintBC(Vcol.sub(i), bcs_u_sub, rows = rows)
+                    activebcs_col = ZeroRowsColumnsBC(Vcol.sub(i), tmp_sub, rows = rows)
                     bcs_col.append(activebcs_col)
 
         # Update bcs list
