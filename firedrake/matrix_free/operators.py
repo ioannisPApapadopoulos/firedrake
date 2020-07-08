@@ -435,7 +435,10 @@ class ImplicitMatrixContext(object):
 
         return submat
 
-    def duplicate(self, mat, newmat):
+    def duplicate(self, mat, copy):
+
+        if copy == 0:
+            raise NotImplementedError("We do now know how to duplicate a matrix-free MAT when copy=0")
         newmat_ctx = ImplicitMatrixContext(self.a,
                                            row_bcs=self.bcs,
                                            col_bcs=self.bcs_col,
@@ -452,22 +455,24 @@ class ImplicitMatrixContext(object):
     def zeroRowsColumns(self, mat, active_rows, diag=1.0, x=None, b=None):
         """
         The way we zero rows and columns of unassembled matrices is by
-        constructing a DirichetBC corresponding to the rows and columns
-        which by nature of how bcs are implemented, is equivalent to zeroing
-        the rows and columns and adding a 1 to the diagonal
-
-        These are the sets of ISes of which the the row and column
-        space consist.
+        constructing a DirichetBC corresponding to the rows and columns.
+        By nature of how bcs are implemented, DirichletBC is equivalent to 
+        zeroing the rows and columns and adding a 1 to the diagonal
         """
-        print("inside zerorowscolumns")
-        print(b)
         print(x)
+        print(b)
         if active_rows is None:
-            raise NotImplementedError("Matrix-free zeroRowsColumns called but no rows provided")
+            # This can happen when running in parallel. Every processor sharing the matrix
+            # must call zeroRowsColumns but the processor might not have any rows to zero. 
+            # For now we just return without adding additional DirichletBC, is this the correct thing to do?
+            return
+            # raise NotImplementedError("Matrix-free zeroRowsColumns called but no rows provided")
         if not numpy.allclose(diag, 1.0):
-            raise NotImplementedError("We do not know how to implement matrix-free ZeroRowsColumns with diag not equal to 1")
-        if b is None:
-            print("WARNING: No right-hand side vector provided to matrix-free zeroRowsColumns, ksp.solve() may cause unexpected behaviour")
+            # DirichletBC adds a 1 onto the diagonal, this is part of the implementation and is not easy to change
+            raise NotImplementedError("We do not know how to implement matrix-free zeroRowsColumns with diag not equal to 1")
+        if b.array_r.size == 0 or b is None:
+            print("WARNING: No right-hand side vector provided to matrix-free zeroRowsColumns")
+            print("WARNING: ksp.solve() with arbitrary right-hand side may cause unexpected behaviour")
 
         ises = self._y.function_space().dof_dset.field_ises
 
@@ -488,10 +493,10 @@ class ImplicitMatrixContext(object):
 
         # If optional vector of solutions for zeroed rows given then need to pass
         # to DirichletBC otherwise it will be zero
-        if x:
-            self._tmp_zeroRowsColumns.vector().set_local(x)
-        else:
+        if x.array_r.size == 0 or x is None:
             self._tmp_zeroRowsColumns.vector().set_local(0)
+        else:
+            self._tmp_zeroRowsColumns.vector().set_local(x)
 
         for i in range(len(block)):
             # For each block create a new DirichletBC corresponding to the
@@ -525,5 +530,7 @@ class ImplicitMatrixContext(object):
         if self._x.function_space().dm.appctx:
             self._x.function_space().dm.appctx[0]._problem.bcs = tuple(bcs)
         # adjust active-set rows in residual
-        if x and b:
+        if (x and x.array_r.size > 0) and (b and b.array_r.size > 0):
             b.array[rows] = x.array_r[rows]
+        elif b and b.array_r.size > 0:
+            b.array[rows] = 0
