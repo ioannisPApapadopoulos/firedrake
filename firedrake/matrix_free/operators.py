@@ -9,8 +9,6 @@ from firedrake.bcs import DirichletBC, EquationBCSplit
 from firedrake.petsc import PETSc
 from firedrake.utils import cached_property
 
-from firedrake.constant import Constant
-
 __all__ = ("ImplicitMatrixContext", )
 
 
@@ -57,7 +55,8 @@ def find_sub_block(iset, ises):
         raise LookupError("Unable to find %s in %s" % (iset, ises))
     return found
 
-def find_element_of_which_sub_block(rows,ises):
+
+def find_element_of_which_sub_block(rows, ises):
     # This function acts as lookup to find which block the indices belong in
     block = {}
     shift = []
@@ -73,7 +72,6 @@ def find_element_of_which_sub_block(rows,ises):
             candidate_indices = candidate.indices
             lmatch = numpy.isin(row, candidate_indices)
             # We found the block in which the index lives, so we store it
-            #if comm.allreduce(lmatch, op=MPI.LAND):
             if lmatch:
                 block[i].append(row)
                 found += 1
@@ -84,42 +82,40 @@ def find_element_of_which_sub_block(rows,ises):
     return (block, shift)
 
 
-
-
 class ZeroRowsColumnsBC(DirichletBC):
-  """
-   This overloads the DirichletBC class in order to impose homogeneous Dirichlet boundary
-   conditions on user-defined vertices
-  """
-  def __init__(self, V, val, rows = None, sub_domain = "on_boundary", method="topological"):
-      super().__init__(V, val, [], method)
-      if rows is not None:
-          self.nodes = numpy.array(rows)
+    """
+    This overloads the DirichletBC class in order to impose homogeneous Dirichlet boundary
+    conditions on user-defined vertices
+    """
+    def __init__(self, V, val, rows=None, sub_domain="on_boundary", method="topological"):
+        super().__init__(V, val, [], method)
+        if rows is not None:
+            self.nodes = numpy.array(rows)
 
-  def reconstruct(self, field=None, V=None, g=None, sub_domain=None, method=None, use_split=False):
-      fs = self.function_space()
-      if V is None:
-          V = fs
-      if g is None:
-         g = self._original_arg
-      if sub_domain is None:
-         sub_domain = self.sub_domain
-      if method is None:
-         method = self.method
-      if field is not None:
-         assert V is not None, "`V` can not be `None` when `field` is not `None`"
-         V = self.as_subspace(field, V, use_split)
-         if V is None:
-             return
-      if V == fs and \
-         V.parent == fs.parent and \
-         V.index == fs.index and \
-         (V.parent is None or V.parent.parent == fs.parent.parent) and \
-         (V.parent is None or V.parent.index == fs.parent.index) and \
-         g == self._original_arg and \
-         sub_domain == self.sub_domain and method == self.method:
-             return self
-      return type(self)(V, g, rows = self.nodes, sub_domain = "on_boundary", method=method)
+    def reconstruct(self, field=None, V=None, g=None, sub_domain=None, method=None, use_split=False):
+        fs = self.function_space()
+        if V is None:
+            V = fs
+        if g is None:
+            g = self._original_arg
+        if sub_domain is None:
+            sub_domain = self.sub_domain
+        if method is None:
+            method = self.method
+        if field is not None:
+            assert V is not None, "`V` can not be `None` when `field` is not `None`"
+            V = self.as_subspace(field, V, use_split)
+            if V is None:
+                return
+        if V == fs and \
+           V.parent == fs.parent and \
+           V.index == fs.index and \
+           (V.parent is None or V.parent.parent == fs.parent.parent) and \
+           (V.parent is None or V.parent.index == fs.parent.index) and \
+           g == self._original_arg and \
+           sub_domain == self.sub_domain and method == self.method:
+            return self
+        return type(self)(V, g, rows=self.nodes, sub_domain="on_boundary", method=method)
 
 
 class ImplicitMatrixContext(object):
@@ -170,7 +166,7 @@ class ImplicitMatrixContext(object):
         from firedrake import function
         self._y = function.Function(test_space)
         self._x = function.Function(trial_space)
-        
+
         # Temporary storage for holding the BC values during zeroRowsColumns
         self._tmp_zeroRowsColumns = function.Function(test_space)
         # These are temporary storage for holding the BC
@@ -438,9 +434,8 @@ class ImplicitMatrixContext(object):
         submat.setUp()
 
         return submat
-    
+
     def duplicate(self, mat, newmat):
-        import ipdb; ipdb.set_trace()
         newmat_ctx = ImplicitMatrixContext(self.a,
                                            row_bcs=self.bcs,
                                            col_bcs=self.bcs_col,
@@ -465,7 +460,7 @@ class ImplicitMatrixContext(object):
         space consist.
         """
         print("inside zerorowscolumns")
-        print(b) 
+        print(b)
         print(x)
         if active_rows is None:
             raise NotImplementedError("Matrix-free zeroRowsColumns called but no rows provided")
@@ -473,7 +468,7 @@ class ImplicitMatrixContext(object):
             raise NotImplementedError("We do not know how to implement matrix-free ZeroRowsColumns with diag not equal to 1")
         if b is None:
             print("WARNING: No right-hand side vector provided to matrix-free zeroRowsColumns, ksp.solve() may cause unexpected behaviour")
-        
+
         ises = self._y.function_space().dof_dset.field_ises
 
         # Find the blocks which the rows are a part of and find the row shift
@@ -490,8 +485,8 @@ class ImplicitMatrixContext(object):
 
         # If rows and columns bcs are equal, then no need to redo columns bcs
         bcs_row_and_column_equal = self.bcs == self.bcs_col
-        
-        # If optional vector of solutions for zeroed rows given then need to pass 
+
+        # If optional vector of solutions for zeroed rows given then need to pass
         # to DirichletBC otherwise it will be zero
         if x:
             self._tmp_zeroRowsColumns.vector().set_local(x)
@@ -502,16 +497,16 @@ class ImplicitMatrixContext(object):
             # For each block create a new DirichletBC corresponding to the
             # rows and columns to be zeroed
             if block[i]:
-                rows = block[i] 
+                rows = block[i]
                 rows = rows - shift[i]
                 tmp_sub = self._tmp_zeroRowsColumns.split()[i]
-                                     
-                activebcs_row = ZeroRowsColumnsBC(Vrow.sub(i), tmp_sub, rows = rows)
+
+                activebcs_row = ZeroRowsColumnsBC(Vrow.sub(i), tmp_sub, rows=rows)
                 bcs.append(activebcs_row)
                 if bcs_row_and_column_equal:
-                   bcs_col.append(activebcs_row)
+                    bcs_col.append(activebcs_row)
                 else:
-                    activebcs_col = ZeroRowsColumnsBC(Vcol.sub(i), tmp_sub, rows = rows)
+                    activebcs_col = ZeroRowsColumnsBC(Vcol.sub(i), tmp_sub, rows=rows)
                     bcs_col.append(activebcs_col)
 
         # Update bcs list
