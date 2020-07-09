@@ -307,3 +307,15 @@ def test_duplicate(a, bcs):
         B_petsc.mult(x, y)
     # Check if original rhs is equal to BA^-1 (rhs)
     assert np.allclose(rhs.vector().array(), solution2.vector().array())
+
+
+def test_matZeroRowsColumns(a, bcs):
+
+    test, trial = a.arguments()
+    
+    if test.function_space().shape == ():
+        rhs_form = inner(Constant(1), test)*dx
+    elif test.function_space().shape == (2, ):
+        rhs_form = inner(Constant((1, 1)), test)*dx
+
+
