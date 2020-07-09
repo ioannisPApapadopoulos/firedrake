@@ -84,7 +84,7 @@ def find_element_of_which_sub_block(rows, ises):
 
 class ZeroRowsColumnsBC(DirichletBC):
     """
-    This overloads the DirichletBC class in order to impose homogeneous Dirichlet boundary
+    This overloads the DirichletBC class in order to impose Dirichlet boundary
     conditions on user-defined vertices
     """
     def __init__(self, V, val, rows=None, sub_domain="on_boundary", method="topological"):
@@ -456,17 +456,14 @@ class ImplicitMatrixContext(object):
         """
         The way we zero rows and columns of unassembled matrices is by
         constructing a DirichetBC corresponding to the rows and columns.
-        By nature of how bcs are implemented, DirichletBC is equivalent to 
+        By nature of how bcs are implemented, DirichletBC is equivalent to
         zeroing the rows and columns and adding a 1 to the diagonal
         """
-        print(x)
-        print(b)
-        if active_rows is None:
+        if active_rows.size == 0:
             # This can happen when running in parallel. Every processor sharing the matrix
-            # must call zeroRowsColumns but the processor might not have any rows to zero. 
+            # must call zeroRowsColumns but the processor might not have any rows to zero.
             # For now we just return without adding additional DirichletBC, is this the correct thing to do?
             return
-            # raise NotImplementedError("Matrix-free zeroRowsColumns called but no rows provided")
         if not numpy.allclose(diag, 1.0):
             # DirichletBC adds a 1 onto the diagonal, this is part of the implementation and is not easy to change
             raise NotImplementedError("We do not know how to implement matrix-free zeroRowsColumns with diag not equal to 1")
@@ -491,8 +488,8 @@ class ImplicitMatrixContext(object):
         # If rows and columns bcs are equal, then no need to redo columns bcs
         bcs_row_and_column_equal = self.bcs == self.bcs_col
 
-        # If optional vector of solutions for zeroed rows given then need to pass
-        # to DirichletBC otherwise it will be zero
+        # If the optional vector of solutions for the zeroed rows is given then
+        # need to pass to DirichletBC, otherwise set to zero
         if x.array_r.size == 0 or x is None:
             self._tmp_zeroRowsColumns.vector().set_local(0)
         else:
@@ -525,7 +522,7 @@ class ImplicitMatrixContext(object):
                                            appctx=self.appctx)
 
         mat.setPythonContext(newmat_ctx)
-        # Needed for MG purposes! This lets the DM SNES context aware of the new Dirichlet BCS
+        # Needed for MG purposes! This makes the DM SNES context aware of the new Dirichlet BCS
         # which is where the bcs are extracted from when coarsening.
         if self._x.function_space().dm.appctx:
             self._x.function_space().dm.appctx[0]._problem.bcs = tuple(bcs)
