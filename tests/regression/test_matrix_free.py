@@ -311,11 +311,43 @@ def test_duplicate(a, bcs):
 
 def test_matZeroRowsColumns(a, bcs):
 
+    # If bcs is None, nothing to test
+    if bcs is None:
+        return
+
+    # grab vertices on boundary
+    rows = bcs.nodes
     test, trial = a.arguments()
-    
+
     if test.function_space().shape == ():
         rhs_form = inner(Constant(1), test)*dx
     elif test.function_space().shape == (2, ):
         rhs_form = inner(Constant((1, 1)), test)*dx
 
+    # solve problem the official way
+    solution1 = Function(test.function_space())
+    solution2 = Function(test.function_space())
+    solve(a == rhs_form, solution1, bcs=bcs)
 
+    # here we solve the same problem, but by assembling a matfree matrix and
+    # using matfree zeroRowsColumns to impose the homogeneous DirichletBC
+    Af = assemble(a, mat_type="matfree")
+    rhs = assemble(rhs_form)
+
+    b = Af.petscmat.createVecLeft()
+    b.array = rhs.vector().array()
+    bzero = Af.petscmat.createVecLeft()
+
+    # this is the method we are testing
+    Af.petscmat.zeroRowsColumns(rows, 1.0, bzero, b)
+
+    ksp = PETSc.KSP().create()
+    ksp.setOperators(Af.petscmat)
+    ksp.setFromOptions()
+
+    with solution2.dat.vec as x:
+        ksp.solve(b, x)
+
+    # check if solution found the official way, and the solution found via
+    # matZeroRowsColumns is the same
+    assert np.allclose(solution1.vector().array(), solution2.vector().array())

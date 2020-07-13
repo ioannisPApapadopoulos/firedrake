@@ -81,6 +81,23 @@ def find_element_of_which_sub_block(rows, ises):
         raise LookupError("Unable to find %s in %s" % (rows, ises))
     return (block, shift)
 
+def vector_function_space_rows(rows, V):
+    no_dofs = []
+    for j in range(V.shape[0]):
+        no_dofs.append(V.sub(j).dim())
+    no_dofs = numpy.array(no_dofs)
+    cum_dofs = numpy.cumsum(no_dofs)
+    np_rows = numpy.array(rows)
+    condition = np_rows < cum_dofs[0]
+    vec_rows = []
+    vec_rows.append(numpy.extract(condition, rows))
+    for j in range(1, V.shape[0]):
+        condition = numpy.logical_and(cum_dofs[j-1] <= np_rows, np_rows < cum_dofs[j])
+        extracted_dofs = numpy.extract(condition, rows) - cum_dofs[j-1]
+        vec_rows.append(extracted_dofs)
+    return vec_rows
+
+
 
 class ZeroRowsColumnsBC(DirichletBC):
     """
@@ -501,12 +518,27 @@ class ImplicitMatrixContext(object):
             if block[i]:
                 rows = block[i]
                 rows = rows - shift[i]
-                tmp_sub = self._tmp_zeroRowsColumns.split()[i]
-
-                activebcs_row = ZeroRowsColumnsBC(Vrow.sub(i), tmp_sub, rows=rows)
-                bcs.append(activebcs_row)
+               
+                # Without this if statement, a VectorFunctionSpace would be split
+                # whilst the tmp_sub would be applying over the whole VectorFunctionSpace
+                # throwing an error
+                if len(block) == 1:
+                    V = Vrow
+                    tmp_sub = self._tmp_zeroRowsColumns
+                else:
+                    V = Vrow.sub(i)
+                    tmp_sub = self._tmp_zeroRowsColumns.split()[i]
+                if len(V.shape) == 0:
+                    activebcs_row = ZeroRowsColumnsBC(V, tmp_sub, rows=rows)
+                    bcs.append(activebcs_row)
+                else:
+                    vec_rows = vector_function_space_rows(rows, V)
+                    for j in range(V.shape[0]):
+                        activebcs_row = ZeroRowsColumnsBC(V.sub(j), tmp_sub.sub(j), rows=vec_rows[j])
+                        bcs.append(activebcs_row)
                 if bcs_row_and_column_equal:
-                    bcs_col.append(activebcs_row)
+                    print("equal")
+                    bcs_col = bcs
                 else:
                     activebcs_col = ZeroRowsColumnsBC(Vcol.sub(i), tmp_sub, rows=rows)
                     bcs_col.append(activebcs_col)
@@ -514,6 +546,7 @@ class ImplicitMatrixContext(object):
         # Update bcs list
         self.bcs = tuple(bcs)
         self.bcs_col = tuple(bcs_col)
+        import ipdb; ipdb.set_trace()
         # Set new context, so PETSc mat is aware of new bcs
         newmat_ctx = ImplicitMatrixContext(self.a,
                                            row_bcs=self.bcs,
