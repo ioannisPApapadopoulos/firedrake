@@ -91,10 +91,15 @@ def vector_function_space_rows(rows, V):
     condition = np_rows < cum_dofs[0]
     vec_rows = []
     vec_rows.append(numpy.extract(condition, rows))
+    print(vec_rows)
     for j in range(1, V.shape[0]):
         condition = numpy.logical_and(cum_dofs[j-1] <= np_rows, np_rows < cum_dofs[j])
         extracted_dofs = numpy.extract(condition, rows) - cum_dofs[j-1]
         vec_rows.append(extracted_dofs)
+    #import ipdb; ipdb.set_trace()
+    vec_rows = [numpy.sort(v) for v in vec_rows]
+    vec_rows = [numpy.unique(v) for v in vec_rows]
+    print(vec_rows)
     return vec_rows
 
 
@@ -534,6 +539,7 @@ class ImplicitMatrixContext(object):
                 else:
                     vec_rows = vector_function_space_rows(rows, V)
                     for j in range(V.shape[0]):
+                        import ipdb; ipdb.set_trace()
                         activebcs_row = ZeroRowsColumnsBC(V.sub(j), tmp_sub.sub(j), rows=vec_rows[j])
                         bcs.append(activebcs_row)
                 if bcs_row_and_column_equal:
@@ -546,7 +552,7 @@ class ImplicitMatrixContext(object):
         # Update bcs list
         self.bcs = tuple(bcs)
         self.bcs_col = tuple(bcs_col)
-        import ipdb; ipdb.set_trace()
+        #import ipdb; ipdb.set_trace()
         # Set new context, so PETSc mat is aware of new bcs
         newmat_ctx = ImplicitMatrixContext(self.a,
                                            row_bcs=self.bcs,
@@ -560,6 +566,9 @@ class ImplicitMatrixContext(object):
         if self._x.function_space().dm.appctx:
             self._x.function_space().dm.appctx[0]._problem.bcs = tuple(bcs)
         # adjust active-set rows in residual
+        rows = numpy.array(rows)
+        rows = numpy.sort(rows)
+        rows = numpy.unique(rows)
         if (x and x.array_r.size > 0) and (b and b.array_r.size > 0):
             b.array[rows] = x.array_r[rows]
         elif b and b.array_r.size > 0:
