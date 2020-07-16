@@ -9,7 +9,6 @@ from firedrake.bcs import DirichletBC, EquationBCSplit
 from firedrake.petsc import PETSc
 from firedrake.utils import cached_property
 
-
 __all__ = ("ImplicitMatrixContext", )
 
 
@@ -55,6 +54,88 @@ def find_sub_block(iset, ises):
         # We didn't manage to hoover up all the target indices, not a match
         raise LookupError("Unable to find %s in %s" % (iset, ises))
     return found
+
+
+def find_element_of_which_sub_block(rows, ises):
+    # This function acts as lookup to find which block the indices belong in
+    block = {}
+    shift = []
+    found = 0
+    candidates = OrderedDict(enumerate(ises))
+    for i, candidate in list(candidates.items()):
+        # Initialise dictionary to hold the rows and the shift parameter
+        # since DirichletBC starts from zero for each block
+        block[i] = []
+        shift.append(candidate.indices[0])
+    for row in rows:
+        for i, candidate in list(candidates.items()):
+            candidate_indices = candidate.indices
+            lmatch = numpy.isin(row, candidate_indices)
+            # We found the block in which the index lives, so we store it
+            if lmatch:
+                block[i].append(row)
+                found += 1
+                break
+    if found < len(rows):
+        # We did not manage to find the row in the possible index sets
+        raise LookupError("Unable to find %s in %s" % (rows, ises))
+    return (block, shift)
+
+
+def vector_function_space_rows(rows, V):
+    # This parses the rows supplied to matZeroRowsColumns into the
+    # corresponding nodes of the subspaces of a VectorFunctionSpace.
+    # If the VectorFunctionSpace is dimension 2, then zeroing row
+    # [0,1,2,3,4,5] corresponds to zeroing the 0,1,2 dofs of the
+    # first FunctionSpace and equally the 0,1,2 dofs of the second
+    # FunctionSpace. Therefore the output would be [[0,1,2],[0,1,2]]
+
+    step = V.shape[0]
+    vec_rows = []
+    belong_to_sub = rows % step
+
+    for i in range(step):
+        rows_i = numpy.extract(belong_to_sub == i, rows)
+        rows_i = rows_i - i
+        rows_i = numpy.int32(rows_i/step)
+        vec_rows.append(rows_i)
+    return vec_rows
+
+
+class ZeroRowsColumnsBC(DirichletBC):
+    """
+    This overloads the DirichletBC class in order to impose Dirichlet boundary
+    conditions on user-defined vertices
+    """
+    def __init__(self, V, val, rows=None, sub_domain="on_boundary", method="topological"):
+        super().__init__(V, val, [], method)
+        if rows is not None:
+            self.nodes = numpy.array(rows)
+
+    def reconstruct(self, field=None, V=None, g=None, sub_domain=None, method=None, use_split=False):
+        fs = self.function_space()
+        if V is None:
+            V = fs
+        if g is None:
+            g = self._original_arg
+        if sub_domain is None:
+            sub_domain = self.sub_domain
+        if method is None:
+            method = self.method
+        if field is not None:
+            assert V is not None, "`V` can not be `None` when `field` is not `None`"
+            V = self.as_subspace(field, V, use_split)
+            if V is None:
+                return
+        if V == fs and \
+           V.parent == fs.parent and \
+           V.index == fs.index and \
+           (V.parent is None or V.parent.parent == fs.parent.parent) and \
+           (V.parent is None or V.parent.index == fs.parent.index) and \
+           g == self._original_arg and \
+           sub_domain == self.sub_domain and method == self.method:
+            return self
+        return type(self)(V, g, rows=self.nodes, sub_domain="on_boundary", method=method)
 
 
 class ImplicitMatrixContext(object):
@@ -106,6 +187,8 @@ class ImplicitMatrixContext(object):
         self._y = function.Function(test_space)
         self._x = function.Function(trial_space)
 
+        # Temporary storage for holding the BC values during zeroRowsColumns
+        self._tmp_zeroRowsColumns = function.Function(test_space)
         # These are temporary storage for holding the BC
         # values during matvec application.  _xbc is for
         # the action and ._ybc is for transpose.
@@ -375,7 +458,7 @@ class ImplicitMatrixContext(object):
     def duplicate(self, mat, copy):
 
         if copy == 0:
-            raise NotImplementedError("We do now know how to duplicate a matrix-free MAT when copy=0")
+            raise NotImplementedError("We do not know how to duplicate a matrix-free MAT when copy=0")
         newmat_ctx = ImplicitMatrixContext(self.a,
                                            row_bcs=self.bcs,
                                            col_bcs=self.bcs_col,
@@ -388,3 +471,93 @@ class ImplicitMatrixContext(object):
         newmat.setPythonContext(newmat_ctx)
         newmat.setUp()
         return newmat
+
+    def zeroRowsColumns(self, mat, active_rows, diag=1.0, x=None, b=None):
+        """
+        The way we zero rows and columns of unassembled matrices is by
+        constructing a DirichetBC corresponding to the rows and columns.
+        By nature of how bcs are implemented, DirichletBC is equivalent to
+        zeroing the rows and columns and adding a 1 to the diagonal
+        """
+        if active_rows.size == 0:
+            # This can happen when running in parallel. Every processor sharing the matrix
+            # must call zeroRowsColumns but the processor might not have any rows to zero.
+            # For now we just return without adding additional DirichletBC, is this the correct thing to do?
+            return
+        if not numpy.allclose(diag, 1.0):
+            # DirichletBC adds a 1 onto the diagonal, this is part of the implementation and is not easy to change
+            raise NotImplementedError("We do not know how to implement matrix-free zeroRowsColumns with diag not equal to 1")
+
+        ises = self._y.function_space().dof_dset.field_ises
+
+        # Find the blocks which the rows are a part of and find the row shift
+        # since DirichletBC starts from 0 for each block
+        (block, shift) = find_element_of_which_sub_block(active_rows, ises)
+
+        # Include current DirichletBC conditions
+        bcs = []
+        bcs_col = []
+        zerorows_bcs = []
+        Vrow = self._y.function_space()
+        [bcs.append(bc) for bc in self.bcs]
+        [bcs_col.append(bc) for bc in self.bcs_col]
+
+        # If the optional vector of solutions for the zeroed rows is given then
+        # need to pass to DirichletBC, otherwise set to zero
+        if x.array_r.size == 0 or x is None:
+            self._tmp_zeroRowsColumns.vector().set_local(0)
+        else:
+            self._tmp_zeroRowsColumns.vector().set_local(x)
+
+        for i in range(len(block)):
+            # For each block create a new DirichletBC corresponding to the
+            # rows and columns to be zeroed
+            if block[i]:
+                rows = block[i]
+                rows = rows - shift[i]
+
+                # Without this if statement, a VectorFunctionSpace would be split
+                # whilst tmp_sub would be applying over the whole VectorFunctionSpace
+                # throwing an error
+                if len(block) == 1:
+                    V = Vrow
+                    tmp_sub = self._tmp_zeroRowsColumns
+                else:
+                    V = Vrow.sub(i)
+                    tmp_sub = self._tmp_zeroRowsColumns.split()[i]
+                if len(V.shape) == 0:
+                    # If FunctionSpace then apply DirichletBC as expected
+                    activebcs_row = ZeroRowsColumnsBC(V, tmp_sub, rows=rows)
+                    zerorows_bcs.append(activebcs_row)
+                else:
+                    # If VectorFunctionSpace, then we need to parse the rows supplied to
+                    # zeroRowsColumns to give the supply the correct nodes to be zeroed
+                    # for each individual subspace of the VectorFunctionSpace
+                    vec_rows = vector_function_space_rows(rows, V)
+                    for sub_iter in range(V.shape[0]):
+                        activebcs_row = ZeroRowsColumnsBC(V.sub(sub_iter), tmp_sub.sub(sub_iter), rows=vec_rows[sub_iter])
+                        zerorows_bcs.append(activebcs_row)
+
+        # Update bcs list
+        bcs.extend(zerorows_bcs)
+        bcs_col.extend(zerorows_bcs)
+        self.bcs = tuple(bcs)
+        self.bcs_col = tuple(bcs_col)
+        # Set new context, so PETSc mat is aware of new bcs
+        newmat_ctx = ImplicitMatrixContext(self.a,
+                                           row_bcs=self.bcs,
+                                           col_bcs=self.bcs_col,
+                                           fc_params=self.fc_params,
+                                           appctx=self.appctx)
+
+        mat.setPythonContext(newmat_ctx)
+        # Needed for MG purposes! This makes the DM SNES context aware of the new Dirichlet BCS
+        # which is where the bcs are extracted from when coarsening.
+        if self._x.function_space().dm.appctx:
+            self._x.function_space().dm.appctx[0]._problem.bcs = tuple(bcs)
+
+        # adjust active-set rows in residual
+        if (x and x.array_r.size > 0) and (b and b.array_r.size > 0):
+            b.array[rows] = x.array_r[rows]
+        elif b and b.array_r.size > 0:
+            b.array[rows] = 0

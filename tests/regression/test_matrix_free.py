@@ -307,3 +307,52 @@ def test_duplicate(a, bcs):
         B_petsc.mult(x, y)
     # Check if original rhs is equal to BA^-1 (rhs)
     assert np.allclose(rhs.vector().array(), solution2.vector().array())
+
+
+def test_matZeroRowsColumns(a, bcs):
+
+    # If bcs is None, nothing to test
+    if bcs is None:
+        return
+
+    test, trial = a.arguments()
+
+    if test.function_space().shape == ():
+        rhs_form = inner(Constant(1), test)*dx
+    elif test.function_space().shape == (2, ):
+        rhs_form = inner(Constant((1, 1)), test)*dx
+
+    # solve problem the official way
+    solution1 = Function(test.function_space())
+    solve(a == rhs_form, solution1, bcs=bcs)
+
+    # grab the positions of the zeroed rows imposed by the DirichletBC
+    # from the solution of the first solve
+    rows = np.extract(np.array(solution1.vector().get_local()) == 0, range(test.function_space().dim()))
+    # petsc4py complains about int type sometimes
+    rows = np.int32(rows)
+
+    # here we solve the same problem, but by assembling a matfree matrix and
+    # using matfree zeroRowsColumns to impose the homogeneous DirichletBC
+    Af = assemble(a, mat_type="matfree")
+    rhs = assemble(rhs_form)
+
+    b = Af.petscmat.createVecLeft()
+    b.array = rhs.vector().array()
+    bzero = Af.petscmat.createVecLeft()
+
+    # this is the method we are testing
+    Af.petscmat.zeroRowsColumns(rows, 1.0, bzero, b)
+
+    # setup KSP
+    ksp = PETSc.KSP().create()
+    ksp.setOperators(Af.petscmat)
+    ksp.setFromOptions()
+
+    solution2 = Function(test.function_space())
+    with solution2.dat.vec as x:
+        ksp.solve(b, x)
+
+    # check if solution found the official way, and the solution found via
+    # matZeroRowsColumns is the same
+    assert np.allclose(solution1.vector().array(), solution2.vector().array())

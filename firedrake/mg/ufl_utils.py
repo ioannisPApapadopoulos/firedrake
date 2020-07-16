@@ -105,6 +105,8 @@ def coarsen_form(form, self, coefficient_mapping=None):
 
 @coarsen.register(firedrake.DirichletBC)
 def coarsen_bc(bc, self, coefficient_mapping=None):
+    if type(bc) == firedrake.matrix_free.operators.ZeroRowsColumnsBC:
+        raise NotImplementedError("We do not know how to coarsen ZeroRowsColumnsBC")
     V = self(bc.function_space(), self, coefficient_mapping=coefficient_mapping)
     val = self(bc._original_val, self, coefficient_mapping=coefficient_mapping)
     zeroed = bc._currently_zeroed
